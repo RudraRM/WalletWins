@@ -100,7 +100,11 @@ export default function Onboard() {
       ].forEach((queryKey) => queryClient.invalidateQueries({ queryKey: [queryKey] }));
     },
     onError: (error: Error) => {
-      toast({ title: "Statement import failed", description: error.message, variant: "destructive" });
+      toast({
+        title: "Statement import failed",
+        description: error.message || "The server could not save this statement. Check the server logs for the database error.",
+        variant: "destructive",
+      });
     },
   });
 

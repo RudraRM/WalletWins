@@ -238,8 +238,18 @@ export async function registerRoutes(
         isNewCard,
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Statement import failed.";
-      const status = message.includes("invalid") ? 400 : 500;
+      console.error("Statement import error:", error);
+      const databaseError = error as {
+        message?: unknown;
+        detail?: unknown;
+        code?: unknown;
+        constraint?: unknown;
+      };
+      const rawMessage = typeof databaseError.message === "string" ? databaseError.message.trim() : "";
+      const detail = typeof databaseError.detail === "string" ? databaseError.detail.trim() : "";
+      const code = typeof databaseError.code === "string" ? databaseError.code : "";
+      const message = rawMessage || detail || (code ? `Database request failed (${code}).` : "Statement import failed before the records could be saved.");
+      const status = /invalid|required|couldn't find|no purchases/i.test(message) ? 400 : 500;
       res.status(status).json({ message });
     }
   });
