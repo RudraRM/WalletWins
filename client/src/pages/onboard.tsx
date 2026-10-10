@@ -1,590 +1,330 @@
-import { useState, useEffect } from "react";
+import { useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { useMutation } from "@tanstack/react-query";
+import { motion, useReducedMotion } from "framer-motion";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { parseStatement, type ImportedTransaction } from "@/lib/statement-import";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
-  Wallet,
-  Sparkles,
-  CreditCard,
-  Plus,
-  Trash2,
-  ArrowRight,
   ArrowLeft,
+  ArrowRight,
   CheckCircle2,
-  Globe,
-  Shield,
-  Search,
+  FileText,
   Loader2,
+  ShieldCheck,
+  Trash2,
+  UploadCloud,
+  Wallet,
 } from "lucide-react";
 
-interface TransactionEntry {
-  id: string;
-  merchant: string;
-  category: string;
-  amount: string;
-  paymentMode: string;
-  date?: string;
+const CATEGORIES = ["Travel", "Dining", "Groceries", "Gas", "Delivery", "Streaming", "Shopping", "Entertainment", "General", "Other"];
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+
+function fileLabel(name: string) {
+  return name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || "My credit card";
 }
 
-const CATEGORIES = ["Travel", "Dining", "Groceries", "Gas", "Delivery", "Streaming", "Shopping", "Entertainment", "General"];
-
-const CARD_TYPES = ["Visa", "Mastercard", "Amex", "Discover", "RuPay"];
-
-function generateId() {
-  return Math.random().toString(36).substring(2, 9);
+function formatCurrency(value: number) {
+  return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
 }
-
-const FETCH_STEPS = [
-  { label: "Analyzing card type...", icon: Search },
-  { label: "Building spending profile...", icon: Shield },
-  { label: "Generating sample transactions...", icon: Globe },
-  { label: "Preparing your demo...", icon: Sparkles },
-];
 
 export default function Onboard() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
-  const [step, setStep] = useState(1);
-
+  const reduceMotion = useReducedMotion();
+  const fileInput = useRef<HTMLInputElement>(null);
+  const [step, setStep] = useState<"upload" | "review" | "done">("upload");
+  const [fileName, setFileName] = useState("");
   const [cardName, setCardName] = useState("");
-  const [cardIssuer, setCardIssuer] = useState("");
+  const [issuer, setIssuer] = useState("");
   const [lastFour, setLastFour] = useState("");
-  const [cardType, setCardType] = useState("");
+  const [transactions, setTransactions] = useState<ImportedTransaction[]>([]);
+  const [categoryRates, setCategoryRates] = useState<Record<string, string>>({});
+  const [dragging, setDragging] = useState(false);
+  const [importResult, setImportResult] = useState<{ importedCount: number; duplicateCount: number }>();
 
-  const [fetchStepIndex, setFetchStepIndex] = useState(0);
-  const [fetchComplete, setFetchComplete] = useState(false);
+  const readFile = async (file?: File) => {
+    if (!file) return;
+    const extension = file.name.split(".").pop()?.toLowerCase();
+    if (!extension || !["csv", "ofx", "qfx"].includes(extension)) {
+      toast({ title: "Choose a CSV or OFX statement", description: "Supported formats are .csv, .ofx, and .qfx.", variant: "destructive" });
+      return;
+    }
+    if (file.size > MAX_FILE_SIZE) {
+      toast({ title: "Statement is too large", description: "Choose a statement under 10 MB.", variant: "destructive" });
+      return;
+    }
 
-  const [txns, setTxns] = useState<TransactionEntry[]>([
-    { id: generateId(), merchant: "", category: "", amount: "", paymentMode: "physical" },
-  ]);
+    try {
+      const parsed = parseStatement(await file.text(), file.name);
+      const categories = Array.from(new Set(parsed.map((transaction) => transaction.category)));
+      setFileName(file.name);
+      setCardName(fileLabel(file.name));
+      setTransactions(parsed);
+      setCategoryRates(Object.fromEntries(categories.map((category) => [category, "1"] as const)));
+      setStep("review");
+    } catch (error) {
+      toast({
+        title: "Couldn't read this statement",
+        description: error instanceof Error ? error.message : "Check the file and try again.",
+        variant: "destructive",
+      });
+    }
+  };
 
-  const addTransaction = () => {
-    setTxns([...txns, { id: generateId(), merchant: "", category: "", amount: "", paymentMode: "physical" }]);
+  const importMutation = useMutation({
+    mutationFn: async () => {
+      const rates = Object.fromEntries(Object.entries(categoryRates).map(([category, value]) => [category, Number(value)]));
+      const response = await apiRequest("POST", "/api/statements/import", {
+        card: { name: cardName.trim(), issuer: issuer.trim(), lastFour: lastFour.trim() },
+        transactions: transactions.map(({ date, merchant, category, amount }) => ({ date, merchant, category, amount })),
+        categoryRates: rates,
+      });
+      return response.json() as Promise<{ importedCount: number; duplicateCount: number }>;
+    },
+    onSuccess: (result) => {
+      setImportResult(result);
+      setStep("done");
+      [
+        "/api/cards",
+        "/api/transactions",
+        "/api/categories",
+        "/api/dashboard/summary",
+        "/api/statements",
+      ].forEach((queryKey) => queryClient.invalidateQueries({ queryKey: [queryKey] }));
+    },
+    onError: (error: Error) => {
+      toast({ title: "Statement import failed", description: error.message, variant: "destructive" });
+    },
+  });
+
+  const updateTransaction = (id: string, field: "category", value: string) => {
+    setTransactions((current) => current.map((transaction) =>
+      transaction.id === id ? { ...transaction, [field]: value } : transaction,
+    ));
+    if (!categoryRates[value]) setCategoryRates((current) => ({ ...current, [value]: "1" }));
   };
 
   const removeTransaction = (id: string) => {
-    if (txns.length <= 1) return;
-    setTxns(txns.filter((t) => t.id !== id));
+    setTransactions((current) => current.filter((transaction) => transaction.id !== id));
   };
 
-  const updateTransaction = (id: string, field: keyof TransactionEntry, value: string) => {
-    setTxns(txns.map((t) => (t.id === id ? { ...t, [field]: value } : t)));
-  };
-
-  const isStep1Valid = cardName.trim() && lastFour.trim().length === 4 && cardType;
-  const isStep3Valid = txns.some((t) => t.merchant.trim() && t.category && parseFloat(t.amount) > 0);
-
-  const generateTxnsMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/generate-transactions", {
-        cardName: cardName.trim(),
-        cardType,
-        issuer: cardIssuer.trim(),
-      });
-      return res.json();
-    },
-    onSuccess: (data: { transactions: Array<{ merchant: string; category: string; amount: number; paymentMode: string; date?: string }> }) => {
-      const mapped: TransactionEntry[] = data.transactions.map((t) => ({
-        id: generateId(),
-        merchant: t.merchant,
-        category: t.category,
-        amount: String(t.amount),
-        paymentMode: t.paymentMode,
-        date: t.date,
-      }));
-      setTxns(mapped);
-      setFetchComplete(true);
-    },
-    onError: (err: Error) => {
-      toast({
-        title: "Couldn't fetch transactions",
-        description: err.message,
-        variant: "destructive",
-      });
-      setTxns([{ id: generateId(), merchant: "", category: "", amount: "", paymentMode: "physical" }]);
-      setFetchComplete(true);
-    },
+  const usedCategories = Array.from(new Set(transactions.map((transaction) => transaction.category)));
+  const rateValuesValid = usedCategories.every((category) => {
+    const value = categoryRates[category] ?? "";
+    const rate = Number(value);
+    return value.trim() !== "" && Number.isFinite(rate) && rate >= 0 && rate <= 100;
   });
-
-  useEffect(() => {
-    if (step !== 2) return;
-
-    setFetchStepIndex(0);
-    setFetchComplete(false);
-
-    generateTxnsMutation.mutate();
-
-    const intervals: NodeJS.Timeout[] = [];
-    FETCH_STEPS.forEach((_, i) => {
-      if (i === 0) return;
-      const timer = setTimeout(() => {
-        setFetchStepIndex(i);
-      }, i * 1200);
-      intervals.push(timer);
-    });
-
-    const completeTimer = setTimeout(() => {
-      setFetchStepIndex(FETCH_STEPS.length);
-    }, FETCH_STEPS.length * 1200);
-    intervals.push(completeTimer);
-
-    return () => intervals.forEach(clearTimeout);
-  }, [step]);
-
-  const showFetchingUI = step === 2 && (!fetchComplete || fetchStepIndex < FETCH_STEPS.length);
-
-  const onboardMutation = useMutation({
-    mutationFn: async () => {
-      const validTxns = txns
-        .filter((t) => t.merchant.trim() && t.category && parseFloat(t.amount) > 0)
-        .map((t) => ({
-          merchant: t.merchant.trim(),
-          category: t.category,
-          amount: parseFloat(t.amount),
-          paymentMode: t.paymentMode,
-          date: t.date,
-        }));
-
-      const res = await apiRequest("POST", "/api/onboard", {
-        card: {
-          name: cardName.trim(),
-          issuer: cardIssuer.trim() || "My Bank",
-          lastFour: lastFour.trim(),
-          cardType,
-        },
-        transactions: validTxns,
-      });
-      return res.json();
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/cards"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/transactions"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/categories"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/dashboard/summary"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/rewards"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/insights"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/rewards-leak"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/redemption-suggestions"] });
-      setStep(3);
-    },
-    onError: (err: Error) => {
-      toast({
-        title: "Something went wrong",
-        description: err.message,
-        variant: "destructive",
-      });
-    },
-  });
-
-  const totalSteps = 3;
+  const canImport = cardName.trim().length > 0 && transactions.length > 0 && rateValuesValid;
+  const totalSpend = transactions.reduce((total, transaction) => total + transaction.amount, 0);
 
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-50 border-b bg-background/80 backdrop-blur-md">
-        <div className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between gap-4 h-14">
-            <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-md bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center">
-                <Wallet className="w-4 h-4 text-white" />
-              </div>
-              <span className="text-lg font-bold tracking-tight" data-testid="text-onboard-logo">
-                WalletWins
-              </span>
-              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-blue-500/10">
-                <Sparkles className="w-3 h-3 text-blue-500" />
-                <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
-                  AI
-                </span>
-              </div>
-            </div>
-            <ThemeToggle />
-          </div>
+        <div className="mx-auto flex h-14 max-w-3xl items-center justify-between gap-4 px-4 sm:px-6">
+          <button className="flex items-center gap-2" onClick={() => navigate("/")} aria-label="WalletWins home">
+            <span className="flex h-8 w-8 items-center justify-center rounded-md bg-gradient-to-br from-blue-500 to-emerald-500">
+              <Wallet className="h-4 w-4 text-white" />
+            </span>
+            <span className="text-lg font-bold tracking-tight">WalletWins</span>
+          </button>
+          <ThemeToggle />
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <motion.main
+        initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, ease: "easeOut" }}
+        className="mx-auto max-w-3xl px-4 py-8 sm:px-6 lg:py-12"
+      >
         <div className="mb-8">
-          <h1 className="text-2xl font-bold tracking-tight" data-testid="text-onboard-heading">
-            Add Your Card
+          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.18em] text-blue-600 dark:text-blue-400">Real transactions. Clearer rewards.</p>
+          <h1 className="text-3xl font-bold tracking-tight" data-testid="text-onboard-heading">
+            {step === "upload" ? "Upload a bank statement" : step === "review" ? "Review before importing" : "Statement imported"}
           </h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Enter your card details and we'll generate sample transactions to demo the analysis.
+          <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+            {step === "upload"
+              ? "Choose a CSV or OFX export from your card issuer. Your original file is read in this browser."
+              : step === "review"
+                ? "Check the parsed purchases and set the earn rate for each category before saving."
+                : "Your imported purchases are now available in the dashboard."}
           </p>
         </div>
 
-        <div className="flex items-center gap-2 mb-8">
-          {[1, 2, 3].map((s) => (
-            <div key={s} className="flex items-center gap-2 flex-1">
-              <div
-                className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${
-                  step >= s
-                    ? "bg-gradient-to-br from-blue-500 to-emerald-500 text-white"
-                    : "bg-muted text-muted-foreground"
-                }`}
-                data-testid={`step-indicator-${s}`}
-              >
-                {step > s ? <CheckCircle2 className="w-4 h-4" /> : s}
+        <div className="mb-7 flex items-center gap-2" aria-label="Import progress">
+          {["Upload", "Review", "Complete"].map((label, index) => {
+            const current = step === "upload" ? 0 : step === "review" ? 1 : 2;
+            const complete = index < current;
+            return (
+              <div className="flex flex-1 items-center gap-2" key={label}>
+                <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-bold ${index <= current ? "bg-gradient-to-br from-blue-500 to-emerald-500 text-white" : "bg-muted text-muted-foreground"}`}>
+                  {complete ? <CheckCircle2 className="h-4 w-4" /> : index + 1}
+                </div>
+                <span className={`hidden text-xs font-medium sm:inline ${index === current ? "text-foreground" : "text-muted-foreground"}`}>{label}</span>
+                {index < 2 && <div className={`h-0.5 flex-1 rounded-full ${complete ? "bg-emerald-500" : "bg-muted"}`} />}
               </div>
-              {s < totalSteps && (
-                <div className={`flex-1 h-0.5 rounded-full ${step > s ? "bg-emerald-500" : "bg-muted"}`} />
-              )}
-            </div>
-          ))}
+            );
+          })}
         </div>
 
-        {step === 1 && (
-          <Card data-testid="section-step-1">
-            <CardHeader className="flex flex-row items-center justify-between gap-2 pb-4">
-              <CardTitle className="text-lg flex items-center gap-2 flex-wrap">
-                <CreditCard className="w-5 h-5 text-blue-500" />
-                Card Details
-              </CardTitle>
-              <Badge variant="outline" className="text-[10px] no-default-hover-elevate no-default-active-elevate">
-                Step 1
-              </Badge>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="cardName">Card Name</Label>
-                <Input
-                  id="cardName"
-                  placeholder="e.g. My Travel Card, Daily Spender"
-                  value={cardName}
-                  onChange={(e) => setCardName(e.target.value)}
-                  data-testid="input-card-name"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="cardIssuer">Bank / Issuer (optional)</Label>
-                <Input
-                  id="cardIssuer"
-                  placeholder="e.g. Chase, HDFC, SBI"
-                  value={cardIssuer}
-                  onChange={(e) => setCardIssuer(e.target.value)}
-                  data-testid="input-card-issuer"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="lastFour">Last 4 Digits</Label>
-                  <Input
-                    id="lastFour"
-                    placeholder="1234"
-                    maxLength={4}
-                    value={lastFour}
-                    onChange={(e) => setLastFour(e.target.value.replace(/\D/g, "").slice(0, 4))}
-                    data-testid="input-last-four"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label>Card Network</Label>
-                  <Select value={cardType} onValueChange={setCardType}>
-                    <SelectTrigger data-testid="select-card-type">
-                      <SelectValue placeholder="Select" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CARD_TYPES.map((ct) => (
-                        <SelectItem key={ct} value={ct} data-testid={`option-card-type-${ct.toLowerCase()}`}>
-                          {ct}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-
-              <div className="pt-4">
-                <Button
-                  className="w-full"
-                  disabled={!isStep1Valid}
-                  onClick={() => setStep(2)}
-                  data-testid="button-next-step"
-                >
-                  Next: Generate Sample Transactions
-                  <ArrowRight className="w-4 h-4" />
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {step === 2 && showFetchingUI && (
-          <Card data-testid="section-step-2-fetching">
-            <CardContent className="p-8">
-              <div className="text-center mb-8">
-                <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center mx-auto mb-4 animate-pulse">
-                  <Globe className="w-8 h-8 text-white" />
-                </div>
-                <h2 className="text-xl font-bold mb-1" data-testid="text-fetching-heading">
-                  Generating sample data...
-                </h2>
-                <p className="text-sm text-muted-foreground">
-                  Creating realistic demo transactions for {cardName} (**** {lastFour})
-                </p>
-              </div>
-
-              <div className="space-y-3 max-w-sm mx-auto">
-                {FETCH_STEPS.map((fs, i) => {
-                  const StepIcon = fs.icon;
-                  const isActive = fetchStepIndex === i;
-                  const isDone = fetchStepIndex > i;
-
-                  return (
-                    <div
-                      key={i}
-                      className={`flex items-center gap-3 p-3 rounded-md transition-all duration-500 ${
-                        isDone
-                          ? "bg-emerald-500/10"
-                          : isActive
-                          ? "bg-blue-500/10"
-                          : "opacity-40"
-                      }`}
-                      data-testid={`fetch-step-${i}`}
-                    >
-                      <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center ${
-                        isDone
-                          ? "bg-emerald-500/20"
-                          : isActive
-                          ? "bg-blue-500/20"
-                          : "bg-muted"
-                      }`}>
-                        {isDone ? (
-                          <CheckCircle2 className="w-4 h-4 text-emerald-500" />
-                        ) : isActive ? (
-                          <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
-                        ) : (
-                          <StepIcon className="w-4 h-4 text-muted-foreground" />
-                        )}
-                      </div>
-                      <span className={`text-sm font-medium ${
-                        isDone
-                          ? "text-emerald-600 dark:text-emerald-400"
-                          : isActive
-                          ? "text-blue-600 dark:text-blue-400"
-                          : "text-muted-foreground"
-                      }`}>
-                        {fs.label}
-                      </span>
-                    </div>
-                  );
-                })}
-              </div>
-
-              <div className="mt-6 flex justify-center">
-                <div className="w-48 h-1.5 rounded-full bg-muted overflow-hidden">
-                  <div
-                    className="h-full bg-gradient-to-r from-blue-500 to-emerald-500 rounded-full transition-all duration-1000 ease-out"
-                    style={{ width: `${Math.min(100, (fetchStepIndex / FETCH_STEPS.length) * 100)}%` }}
-                  />
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-
-        {step === 2 && !showFetchingUI && (
-          <Card data-testid="section-step-2">
-            <CardHeader className="flex flex-row items-center justify-between gap-2 pb-4">
-              <CardTitle className="text-lg flex items-center gap-2 flex-wrap">
-                <Sparkles className="w-5 h-5 text-emerald-500" />
-                Review Transactions
-              </CardTitle>
-              <Badge variant="outline" className="text-[10px] no-default-hover-elevate no-default-active-elevate">
-                Step 2
-              </Badge>
+        {step === "upload" && (
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg"><UploadCloud className="h-5 w-5 text-blue-500" /> Choose a statement file</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="flex items-center gap-2 mb-3 flex-wrap">
-                <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-blue-500/10">
-                  <Sparkles className="w-3 h-3 text-blue-500" />
-                  <span className="text-xs font-medium text-blue-600 dark:text-blue-400">
-                    {txns.length} sample transactions
-                  </span>
-                </div>
-                <p className="text-xs text-muted-foreground" data-testid="text-pair-subtitle">
-                  for <span className="font-semibold text-foreground">{cardName}</span> (**** {lastFour})
-                </p>
-              </div>
-
-              <div className="p-3 rounded-md bg-amber-500/10 border border-amber-500/20 mb-4">
-                <p className="text-xs text-amber-700 dark:text-amber-400">
-                  These are <span className="font-semibold">demo transactions</span> to show how the analysis works. Replace them with your real purchases for accurate results, or use them as-is to explore the app.
-                </p>
-              </div>
-
-              <div className="space-y-3">
-                {txns.map((tx, index) => (
-                  <Card key={tx.id} data-testid={`card-transaction-entry-${index}`}>
-                    <CardContent className="p-4 space-y-3">
-                      <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <span className="text-xs font-medium text-muted-foreground">
-                          Transaction {index + 1}
-                          {tx.date && (
-                            <span className="ml-2 text-muted-foreground/70">{tx.date}</span>
-                          )}
-                        </span>
-                        {txns.length > 1 && (
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            onClick={() => removeTransaction(tx.id)}
-                            data-testid={`button-remove-tx-${index}`}
-                          >
-                            <Trash2 className="w-4 h-4 text-muted-foreground" />
-                          </Button>
-                        )}
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Merchant</Label>
-                          <Input
-                            placeholder="e.g. Starbucks"
-                            value={tx.merchant}
-                            onChange={(e) => updateTransaction(tx.id, "merchant", e.target.value)}
-                            data-testid={`input-merchant-${index}`}
-                          />
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Amount ($)</Label>
-                          <Input
-                            type="number"
-                            placeholder="25.00"
-                            value={tx.amount}
-                            onChange={(e) => updateTransaction(tx.id, "amount", e.target.value)}
-                            data-testid={`input-amount-${index}`}
-                          />
-                        </div>
-                      </div>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Category</Label>
-                          <Select
-                            value={tx.category}
-                            onValueChange={(v) => updateTransaction(tx.id, "category", v)}
-                          >
-                            <SelectTrigger data-testid={`select-category-${index}`}>
-                              <SelectValue placeholder="Select" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {CATEGORIES.map((cat) => (
-                                <SelectItem key={cat} value={cat} data-testid={`option-category-${cat.toLowerCase()}-${index}`}>
-                                  {cat}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                        <div className="space-y-1.5">
-                          <Label className="text-xs">Payment Mode</Label>
-                          <Select
-                            value={tx.paymentMode}
-                            onValueChange={(v) => updateTransaction(tx.id, "paymentMode", v)}
-                          >
-                            <SelectTrigger data-testid={`select-payment-mode-${index}`}>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="digital" data-testid={`option-digital-${index}`}>Digital Wallet</SelectItem>
-                              <SelectItem value="physical" data-testid={`option-physical-${index}`}>Physical Card</SelectItem>
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-
-              <Button
-                variant="outline"
-                className="w-full mt-4"
-                onClick={addTransaction}
-                data-testid="button-add-transaction"
+              <button
+                type="button"
+                onClick={() => fileInput.current?.click()}
+                onDragOver={(event) => { event.preventDefault(); setDragging(true); }}
+                onDragLeave={() => setDragging(false)}
+                onDrop={(event) => { event.preventDefault(); setDragging(false); void readFile(event.dataTransfer.files[0]); }}
+                className={`flex min-h-56 w-full flex-col items-center justify-center rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors ${dragging ? "border-blue-500 bg-blue-500/5" : "border-border hover:border-blue-500/50 hover:bg-muted/30"}`}
+                data-testid="dropzone-statement"
               >
-                <Plus className="w-4 h-4" />
-                Add Another Transaction
+                <span className="mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                  <FileText className="h-7 w-7" />
+                </span>
+                <span className="font-semibold">Drop your statement here</span>
+                <span className="mt-1 text-sm text-muted-foreground">or browse files · CSV, OFX, QFX · up to 10 MB</span>
+                <span className="mt-5 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground">Choose file</span>
+              </button>
+              <input
+                ref={fileInput}
+                type="file"
+                accept=".csv,.ofx,.qfx,text/csv,application/x-ofx,application/vnd.intu.qfx"
+                className="sr-only"
+                onChange={(event) => { void readFile(event.currentTarget.files?.[0]); event.currentTarget.value = ""; }}
+                data-testid="input-statement-file"
+              />
+              <div className="mt-5 flex items-start gap-3 rounded-lg border bg-muted/40 p-4">
+                <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                <p className="text-xs leading-relaxed text-muted-foreground">
+                  The original file is parsed in your browser; only the transaction rows you approve are sent to this app. This app has no sign-in yet, so use statement data only on a deployment you control.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {step === "review" && (
+          <div className="space-y-5">
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="flex items-center gap-2 text-lg"><FileText className="h-5 w-5 text-blue-500" /> Statement details</CardTitle>
+              </CardHeader>
+              <CardContent className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2 sm:col-span-2">
+                  <Label htmlFor="cardName">Card name</Label>
+                  <Input id="cardName" value={cardName} onChange={(event) => setCardName(event.target.value)} maxLength={100} placeholder="e.g. Sapphire Preferred" data-testid="input-card-name" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="issuer">Bank / issuer (optional)</Label>
+                  <Input id="issuer" value={issuer} onChange={(event) => setIssuer(event.target.value)} maxLength={100} placeholder="e.g. Chase" data-testid="input-card-issuer" />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="lastFour">Last 4 digits (optional)</Label>
+                  <Input id="lastFour" inputMode="numeric" maxLength={4} value={lastFour} onChange={(event) => setLastFour(event.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="1234" data-testid="input-last-four" />
+                </div>
+                <p className="text-xs leading-relaxed text-muted-foreground sm:col-span-2">
+                  {fileName} · {transactions.length} purchases · {formatCurrency(totalSpend)} total spend
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-lg">Reward rates by category</CardTitle>
+                <p className="text-xs leading-relaxed text-muted-foreground">Rates start at 1%. Set your card's actual earn rate for each category; transaction files generally do not include rewards data.</p>
+              </CardHeader>
+              <CardContent className="grid gap-3 sm:grid-cols-2">
+                {Object.entries(categoryRates).map(([category, rate]) => (
+                  <div className="flex items-center justify-between gap-3 rounded-lg border p-3" key={category}>
+                    <Label htmlFor={`rate-${category}`} className="truncate">{category}</Label>
+                    <div className="relative w-28 shrink-0">
+                      <Input
+                        id={`rate-${category}`}
+                        type="number"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        value={rate}
+                        onChange={(event) => setCategoryRates((current) => ({ ...current, [category]: event.target.value }))}
+                        className="pr-7 text-right"
+                        aria-label={`${category} earn rate percent`}
+                      />
+                      <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">%</span>
+                    </div>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between gap-3">
+                  <CardTitle className="text-lg">Review purchases</CardTitle>
+                  <span className="text-xs text-muted-foreground">{transactions.length} rows</span>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="max-h-[28rem] space-y-2 overflow-y-auto pr-1">
+                  {transactions.map((transaction, index) => (
+                    <div className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-lg border p-3" key={transaction.id}>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium">{transaction.merchant}</p>
+                        <p className="mt-0.5 text-xs text-muted-foreground">{new Date(`${transaction.date}T12:00:00`).toLocaleDateString()}</p>
+                      </div>
+                      <Select value={transaction.category} onValueChange={(value) => updateTransaction(transaction.id, "category", value)}>
+                        <SelectTrigger className="w-32" aria-label={`Category for ${transaction.merchant}`}><SelectValue /></SelectTrigger>
+                        <SelectContent>{CATEGORIES.map((category) => <SelectItem key={category} value={category}>{category}</SelectItem>)}</SelectContent>
+                      </Select>
+                      <div className="flex items-center gap-1">
+                        <span className="min-w-16 text-right text-sm font-semibold tabular-nums">{formatCurrency(transaction.amount)}</span>
+                        <Button size="icon" variant="ghost" onClick={() => removeTransaction(transaction.id)} aria-label={`Remove ${transaction.merchant}`} data-testid={`button-remove-transaction-${index}`}>
+                          <Trash2 className="h-4 w-4 text-muted-foreground" />
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <div className="flex gap-3">
+              <Button variant="outline" onClick={() => setStep("upload")}><ArrowLeft className="h-4 w-4" /> Back</Button>
+              <Button className="flex-1" disabled={!canImport || importMutation.isPending} onClick={() => importMutation.mutate()} data-testid="button-submit-import">
+                {importMutation.isPending ? <><Loader2 className="h-4 w-4 animate-spin" /> Importing statement...</> : <>Import {transactions.length} purchases <ArrowRight className="h-4 w-4" /></>}
               </Button>
+            </div>
+          </div>
+        )}
 
-              <div className="flex gap-3 mt-6">
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setStep(1);
-                    setFetchComplete(false);
-                    setFetchStepIndex(0);
-                  }}
-                  data-testid="button-back-step"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                  Back
-                </Button>
-                <Button
-                  className="flex-1"
-                  disabled={!isStep3Valid || onboardMutation.isPending}
-                  onClick={() => onboardMutation.mutate()}
-                  data-testid="button-submit-onboard"
-                >
-                  {onboardMutation.isPending ? "Analyzing..." : "Analyze My Card"}
-                  {!onboardMutation.isPending && <Sparkles className="w-4 h-4" />}
-                </Button>
+        {step === "done" && importResult && (
+          <Card>
+            <CardContent className="p-8 text-center sm:p-12">
+              <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-500/10 text-emerald-600">
+                <CheckCircle2 className="h-8 w-8" />
+              </div>
+              <h2 className="text-2xl font-bold">Your statement is in</h2>
+              <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+                Imported {importResult.importedCount} purchases for <span className="font-semibold text-foreground">{cardName}</span>{importResult.duplicateCount > 0 ? `; skipped ${importResult.duplicateCount} duplicate rows.` : "."}
+              </p>
+              <div className="mt-7 flex flex-col justify-center gap-3 sm:flex-row">
+                <Button onClick={() => navigate("/dashboard")} data-testid="button-go-dashboard">View dashboard <ArrowRight className="h-4 w-4" /></Button>
+                <Button variant="outline" onClick={() => { setStep("upload"); setTransactions([]); setCategoryRates({}); setFileName(""); setImportResult(undefined); }}>Import another statement</Button>
               </div>
             </CardContent>
           </Card>
         )}
-
-        {step === 3 && (
-          <Card data-testid="section-step-3">
-            <CardContent className="p-8 text-center">
-              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center mx-auto mb-4">
-                <CheckCircle2 className="w-8 h-8 text-white" />
-              </div>
-              <h2 className="text-xl font-bold mb-2" data-testid="text-success-heading">
-                Card Added Successfully!
-              </h2>
-              <p className="text-sm text-muted-foreground mb-2" data-testid="text-success-subtitle">
-                <span className="font-semibold text-foreground">{cardName}</span> (**** {lastFour}) has been added with {txns.filter((t) => t.merchant.trim() && t.category && parseFloat(t.amount) > 0).length} transactions.
-              </p>
-              <p className="text-xs text-muted-foreground mb-6">
-                Your dashboard now includes rewards analysis and insights for this card.
-              </p>
-              <div className="flex flex-col sm:flex-row gap-3 justify-center">
-                <Button
-                  onClick={() => navigate("/dashboard")}
-                  data-testid="button-go-dashboard"
-                >
-                  View Dashboard
-                  <ArrowRight className="w-4 h-4" />
-                </Button>
-                <Button
-                  variant="outline"
-                  onClick={() => {
-                    setStep(1);
-                    setCardName("");
-                    setCardIssuer("");
-                    setLastFour("");
-                    setCardType("");
-                    setFetchComplete(false);
-                    setFetchStepIndex(0);
-                    setTxns([{ id: generateId(), merchant: "", category: "", amount: "", paymentMode: "physical" }]);
-                  }}
-                  data-testid="button-add-another"
-                >
-                  <Plus className="w-4 h-4" />
-                  Add Another Card
-                </Button>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-      </main>
+      </motion.main>
     </div>
   );
 }

@@ -4,29 +4,29 @@ import { FileText, Layers, Target, Calculator } from "lucide-react";
 const steps = [
   {
     icon: FileText,
-    title: "Reads statements",
-    desc: "Pulls in your credit card transactions automatically.",
+    title: "Imports purchases",
+    desc: "Read a CSV or OFX export from your card issuer.",
     color: "bg-blue-500/10",
     iconColor: "text-blue-500",
   },
   {
     icon: Layers,
     title: "Identifies categories",
-    desc: "Tags every purchase as dining, groceries, travel, gas, and more.",
+    desc: "Use statement categories where available and review each purchase.",
     color: "bg-emerald-500/10",
     iconColor: "text-emerald-500",
   },
   {
     icon: Target,
     title: "Matches reward strengths",
-    desc: "Compares each card's reward rate per category to find the best fit.",
+    desc: "Compare the category rates you entered across your cards.",
     color: "bg-amber-500/10",
     iconColor: "text-amber-500",
   },
   {
     icon: Calculator,
     title: "Calculates missed rewards",
-    desc: "Shows exactly how much you left on the table — and how to fix it.",
+    desc: "Estimate the difference between your card and a higher-earning option.",
     color: "bg-rose-500/10",
     iconColor: "text-rose-500",
   },
@@ -36,7 +36,7 @@ export function HowItWorks() {
   return (
     <Card data-testid="card-how-it-works">
       <CardHeader className="pb-4">
-        <CardTitle className="text-lg">How WalletWins AI Works</CardTitle>
+        <CardTitle className="text-lg">How WalletWins works</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

@@ -18,9 +18,16 @@ export interface IStorage {
   getCategories(): Promise<RewardCategory[]>;
   getCategoriesByCard(cardId: string): Promise<RewardCategory[]>;
   insertCategory(category: InsertRewardCategory): Promise<RewardCategory>;
+  updateCategoryRate(categoryId: string, rewardRate: number): Promise<void>;
 
   getTransactions(): Promise<Transaction[]>;
   insertTransaction(tx: InsertTransaction): Promise<Transaction>;
+  updateTransactionAnalysis(
+    transactionId: string,
+    rewardsEarned: number,
+    optimalCardId: string | null,
+    optimalRewards: number | null,
+  ): Promise<void>;
 
   getRewards(): Promise<Reward[]>;
   getExpiringRewards(): Promise<Reward[]>;
@@ -61,6 +68,10 @@ export class DatabaseStorage implements IStorage {
     return result;
   }
 
+  async updateCategoryRate(categoryId: string, rewardRate: number): Promise<void> {
+    await db.update(rewardCategories).set({ rewardRate }).where(eq(rewardCategories.id, categoryId));
+  }
+
   async getTransactions(): Promise<Transaction[]> {
     return db.select().from(transactions);
   }
@@ -68,6 +79,17 @@ export class DatabaseStorage implements IStorage {
   async insertTransaction(tx: InsertTransaction): Promise<Transaction> {
     const [result] = await db.insert(transactions).values(tx).returning();
     return result;
+  }
+
+  async updateTransactionAnalysis(
+    transactionId: string,
+    rewardsEarned: number,
+    optimalCardId: string | null,
+    optimalRewards: number | null,
+  ): Promise<void> {
+    await db.update(transactions)
+      .set({ rewardsEarned, optimalCardId, optimalRewards })
+      .where(eq(transactions.id, transactionId));
   }
 
   async getRewards(): Promise<Reward[]> {

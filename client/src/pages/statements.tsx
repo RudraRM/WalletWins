@@ -1,11 +1,11 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { motion, useReducedMotion } from "framer-motion";
 import { useLocation, Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   Wallet,
-  Sparkles,
   ChevronDown,
   ChevronRight,
   CreditCard,
@@ -14,6 +14,7 @@ import {
   Percent,
   TrendingUp,
   Receipt,
+  CircleDollarSign,
 } from "lucide-react";
 import type { CreditCard as CreditCardType, Transaction } from "@shared/schema";
 
@@ -190,9 +191,9 @@ function StatementCard({
           </div>
           <div className="rounded-lg bg-muted/50 p-3">
             <div className="flex items-center gap-1 mb-1">
-              <Sparkles className="w-3 h-3 text-muted-foreground" />
+              <CircleDollarSign className="w-3 h-3 text-muted-foreground" />
               <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-medium">
-                Earned
+                Est. rewards
               </span>
             </div>
             <p className="text-base font-bold tabular-nums" style={{ color: cardColor.accent }} data-testid={`text-earned-${statement.card.id}`}>
@@ -265,6 +266,7 @@ function StatementCard({
 }
 
 export default function Statements() {
+  const reduceMotion = useReducedMotion();
   const { data: statements, isLoading } = useQuery<CardStatement[]>({
     queryKey: ["/api/statements"],
   });
@@ -302,12 +304,6 @@ export default function Statements() {
                 <span className="text-lg font-bold tracking-tight" data-testid="text-app-name">
                   WalletWins
                 </span>
-                <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-blue-500/10">
-                  <Sparkles className="w-3 h-3 text-blue-500" />
-                  <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
-                    AI
-                  </span>
-                </div>
               </div>
             </div>
             <ThemeToggle />
@@ -315,14 +311,19 @@ export default function Statements() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      <motion.main
+        initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, ease: "easeOut" }}
+        className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6"
+      >
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold tracking-tight" data-testid="text-heading">
-              Statement Reader
+              Spending by card
             </h1>
             <p className="text-sm text-muted-foreground mt-0.5">
-              Monthly breakdown by card and category
+              Spending and estimated rewards by card and category
             </p>
           </div>
         </div>
@@ -337,13 +338,13 @@ export default function Statements() {
                 id: "total-spend",
               },
               {
-                label: "Total Earned",
+                label: "Estimated rewards",
                 value: formatCurrency(totals.earned),
-                icon: Sparkles,
+                icon: CircleDollarSign,
                 id: "total-earned",
               },
               {
-                label: "Avg. Cashback",
+                label: "Avg. reward rate",
                 value: `${avgCashback.toFixed(1)}%`,
                 icon: TrendingUp,
                 id: "avg-cashback",
@@ -387,10 +388,11 @@ export default function Statements() {
         ) : (
           <div className="text-center py-16">
             <CreditCard className="w-10 h-10 text-muted-foreground mx-auto mb-3" />
-            <p className="text-sm text-muted-foreground">No card data available</p>
+            <p className="text-sm text-muted-foreground">No imported statements yet.</p>
+            <Link href="/onboard"><Button className="mt-4">Upload a statement</Button></Link>
           </div>
         )}
-      </main>
+      </motion.main>
 
       <footer className="border-t mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -399,11 +401,9 @@ export default function Statements() {
               <div className="w-5 h-5 rounded-md bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center">
                 <Wallet className="w-3 h-3 text-white" />
               </div>
-              <span className="text-xs text-muted-foreground">WalletWins AI</span>
+              <span className="text-xs text-muted-foreground">WalletWins</span>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Sample data for demo purposes
-            </p>
+            <Link href="/onboard" className="text-xs text-muted-foreground hover:text-foreground">Upload a statement</Link>
           </div>
         </div>
       </footer>
