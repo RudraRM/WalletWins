@@ -155,7 +155,7 @@ export function TransactionsSection({ transactions, cards, isLoading, filterCard
                 <div className="text-right flex-shrink-0">
                   <div className="text-sm font-medium">{formatCurrency(tx.amount)}</div>
                   <div className="text-xs text-emerald-600 dark:text-emerald-400">
-                    +{formatCurrency(tx.rewardsEarned)}
+                    est. {formatCurrency(tx.rewardsEarned)}
                   </div>
                 </div>
               </div>

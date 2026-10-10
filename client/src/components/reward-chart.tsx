@@ -32,7 +32,7 @@ function CustomTooltipContent({ active, payload }: any) {
     <div className="bg-popover border border-popover-border rounded-md px-3 py-2 shadow-md">
       <p className="text-sm font-medium">{data.name}</p>
       <p className="text-xs text-emerald-600 dark:text-emerald-400">
-        {formatCurrency(data.rewards)} earned
+        {formatCurrency(data.rewards)} estimated
       </p>
     </div>
   );
@@ -43,7 +43,7 @@ export function RewardChart({ cards, isLoading }: RewardChartProps) {
     return (
       <Card>
         <CardHeader className="pb-4">
-          <CardTitle className="text-lg">Rewards by Card</CardTitle>
+          <CardTitle className="text-lg">Estimated rewards by card</CardTitle>
         </CardHeader>
         <CardContent>
           <Skeleton className="h-48 w-full rounded-md" />
@@ -63,7 +63,7 @@ export function RewardChart({ cards, isLoading }: RewardChartProps) {
   return (
     <Card>
       <CardHeader className="pb-4">
-        <CardTitle className="text-lg">Rewards by Card</CardTitle>
+        <CardTitle className="text-lg">Estimated rewards by card</CardTitle>
       </CardHeader>
       <CardContent>
         <div className="h-48" data-testid="chart-rewards-by-card">

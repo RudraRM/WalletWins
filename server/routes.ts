@@ -1,7 +1,6 @@
 import type { Express } from "express";
-import { createServer, type Server } from "http";
+import type { Server } from "http";
 import { storage } from "./storage";
-import { insertCreditCardSchema, insertTransactionSchema } from "@shared/schema";
 
 export async function registerRoutes(
   httpServer: Server,
@@ -61,442 +60,187 @@ export async function registerRoutes(
     }
   });
 
-  app.get("/api/digital-vs-physical", async (req, res) => {
+  app.post("/api/statements/import", async (req, res) => {
     try {
-      const cardName = (req.query.card as string) || "Card-SaveProMax";
-      const allCards = await storage.getCards();
-      const targetCard = allCards.find((c) => c.name === cardName);
-      if (!targetCard) {
-        res.json(null);
+      const { card, transactions: importedRows, categoryRates } = req.body ?? {};
+      if (
+        typeof card?.name !== "string" ||
+        !card.name.trim() ||
+        card.name.length > 100 ||
+        !Array.isArray(importedRows) ||
+        importedRows.length === 0 ||
+        importedRows.length > 5000 ||
+        !categoryRates ||
+        typeof categoryRates !== "object"
+      ) {
+        res.status(400).json({ message: "A card name, category rates, and 1-5,000 statement purchases are required." });
         return;
       }
 
-      const allCategories = await storage.getCategories();
-      const cardCategories = allCategories.filter((c) => c.cardId === targetCard.id);
-      const allTransactions = await storage.getTransactions();
-      const cardTxns = allTransactions.filter((t) => t.cardId === targetCard.id);
+      const categories = Array.from(new Set(importedRows.map((row: any) => String(row?.category ?? "").trim())));
+      if (
+        categories.some((category) => !category || category.length > 50) ||
+        categories.some((category) => {
+          const rate = Number(categoryRates[category]);
+          return !Number.isFinite(rate) || rate < 0 || rate > 100;
+        })
+      ) {
+        res.status(400).json({ message: "Every transaction needs a category with a reward rate between 0 and 100%." });
+        return;
+      }
 
-      const digitalTxns = cardTxns.filter((t) => t.paymentMode === "digital");
-      const physicalTxns = cardTxns.filter((t) => t.paymentMode === "physical");
-
-      const getBaseRate = (category: string): number => {
-        const cat = cardCategories.find(
-          (c) => c.category.toLowerCase() === category.toLowerCase()
-        );
-        return cat ? cat.rewardRate : 1;
-      };
-
-      const computeRewards = (txns: typeof cardTxns, isDigital: boolean) => {
-        let spend = 0;
-        let rewards = 0;
-        for (const tx of txns) {
-          spend += tx.amount;
-          const baseRate = getBaseRate(tx.category);
-          const effectiveRate = isDigital ? baseRate + 1 : baseRate;
-          rewards += tx.amount * (effectiveRate / 100);
+      const normalizedRows = importedRows.map((row: any) => {
+        const amount = Number(row?.amount);
+        const date = new Date(row?.date);
+        if (
+          typeof row?.merchant !== "string" ||
+          !row.merchant.trim() ||
+          row.merchant.length > 200 ||
+          !Number.isFinite(amount) ||
+          amount <= 0 ||
+          amount > 1000000 ||
+          Number.isNaN(date.getTime())
+        ) {
+          throw new Error("One or more imported transactions are invalid.");
         }
-        return { spend, rewards };
-      };
-
-      const digital = computeRewards(digitalTxns, true);
-      const physical = computeRewards(physicalTxns, false);
-
-      const digitalCashback = digital.spend > 0 ? (digital.rewards / digital.spend) * 100 : 0;
-      const physicalCashback = physical.spend > 0 ? (physical.rewards / physical.spend) * 100 : 0;
-
-      const missedRewardsDueToMode = physicalTxns.reduce((s, t) => s + t.amount * 0.01, 0);
-
-      const totalRewards = digital.rewards + physical.rewards;
-
-      res.json({
-        card: targetCard,
-        digital_spend: digital.spend,
-        physical_spend: physical.spend,
-        digital_rewards: digital.rewards,
-        physical_rewards: physical.rewards,
-        total_rewards: totalRewards,
-        missed_rewards_due_to_mode: missedRewardsDueToMode,
-        digital: {
-          spend: digital.spend,
-          rewards: digital.rewards,
-          cashback: digitalCashback,
-          transactionCount: digitalTxns.length,
-          transactions: digitalTxns,
-        },
-        physical: {
-          spend: physical.spend,
-          rewards: physical.rewards,
-          cashback: physicalCashback,
-          transactionCount: physicalTxns.length,
-          transactions: physicalTxns,
-        },
-        modeLeak: missedRewardsDueToMode,
-      });
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch digital vs physical data" });
-    }
-  });
-
-  app.get("/api/rewards-leak", async (_req, res) => {
-    try {
-      const allCards = await storage.getCards();
-      const allTransactions = await storage.getTransactions();
-
-      const cardEfficiency = allCards.map((card) => {
-        const cardTxns = allTransactions.filter((t) => t.cardId === card.id);
-        const totalSpend = cardTxns.reduce((s, t) => s + t.amount, 0);
-        const earned = cardTxns.reduce((s, t) => s + t.rewardsEarned, 0);
-        const potential = cardTxns.reduce((s, t) => {
-          if (t.optimalRewards && t.optimalCardId !== t.cardId) return s + t.optimalRewards;
-          return s + t.rewardsEarned;
-        }, 0);
         return {
-          card,
-          totalSpend,
-          earned,
-          potential,
-          efficiency: potential > 0 ? (earned / potential) * 100 : 100,
+          merchant: row.merchant.trim(),
+          category: String(row.category).trim(),
+          amount: Math.round(amount * 100) / 100,
+          date,
         };
       });
 
-      const totalEarned = allTransactions.reduce((s, t) => s + t.rewardsEarned, 0);
-      const totalPotential = allTransactions.reduce((s, t) => {
-        if (t.optimalRewards && t.optimalCardId !== t.cardId) return s + t.optimalRewards;
-        return s + t.rewardsEarned;
-      }, 0);
+      const issuer = typeof card.issuer === "string" && card.issuer.trim()
+        ? card.issuer.trim().slice(0, 100)
+        : "Unknown issuer";
+      const lastFour = typeof card.lastFour === "string" && /^\d{4}$/.test(card.lastFour)
+        ? card.lastFour
+        : "----";
+      const cardsBeforeImport = await storage.getCards();
+      let targetCard = cardsBeforeImport.find(
+        (existing) =>
+          existing.name.toLowerCase() === card.name.trim().toLowerCase() &&
+          existing.issuer.toLowerCase() === issuer.toLowerCase() &&
+          existing.lastFour === lastFour,
+      );
+      const isNewCard = !targetCard;
 
-      const allCategories = await storage.getCategories();
-      const digitalBonusCards = ["Card-SaveProMax", "Card-MidnightSnacks"];
-      let totalModeLeak = 0;
-      const cardBreakdowns: Record<string, { digitalRewards: number; physicalRewards: number; digitalSpend: number; physicalSpend: number }> = {};
-
-      for (const cardName of digitalBonusCards) {
-        const card = allCards.find((c) => c.name === cardName);
-        if (!card) continue;
-
-        const cardCats = allCategories.filter((c) => c.cardId === card.id);
-        const rateMap: Record<string, number> = {};
-        cardCats.forEach((c) => { rateMap[c.category] = c.rewardRate; });
-
-        const cardTxns = allTransactions.filter((t) => t.cardId === card.id);
-        const dTxns = cardTxns.filter((t) => t.paymentMode === "digital");
-        const pTxns = cardTxns.filter((t) => t.paymentMode === "physical");
-
-        const compute = (txns: typeof cardTxns, isDigital: boolean) =>
-          txns.reduce((sum, t) => {
-            const base = rateMap[t.category] || 1;
-            return sum + (t.amount * (isDigital ? base + 1 : base)) / 100;
-          }, 0);
-
-        const dRewards = compute(dTxns, true);
-        const pRewards = compute(pTxns, false);
-        const cardModeLeak = pTxns.reduce((s, t) => s + t.amount * 0.01, 0);
-        totalModeLeak += cardModeLeak;
-
-        cardBreakdowns[cardName] = {
-          digitalRewards: Math.round(dRewards * 100) / 100,
-          physicalRewards: Math.round(pRewards * 100) / 100,
-          digitalSpend: dTxns.reduce((s, t) => s + t.amount, 0),
-          physicalSpend: pTxns.reduce((s, t) => s + t.amount, 0),
-        };
-      }
-
-      res.json({
-        totalEarned,
-        totalPotential,
-        totalLeaked: totalPotential - totalEarned,
-        modeLeak: Math.round(totalModeLeak * 100) / 100,
-        cardEfficiency,
-        saveProMaxBreakdown: cardBreakdowns["Card-SaveProMax"] || null,
-        midnightSnacksBreakdown: cardBreakdowns["Card-MidnightSnacks"] || null,
-      });
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch rewards leak data" });
-    }
-  });
-
-  app.post("/api/generate-transactions", async (_req, res) => {
-    try {
-      const { cardName, cardType, issuer } = _req.body;
-
-      const merchantProfiles: Record<string, Array<{ merchant: string; category: string; amountRange: [number, number]; digitalChance: number }>> = {
-        travel: [
-          { merchant: "Delta Airlines", category: "Travel", amountRange: [120, 650], digitalChance: 0.9 },
-          { merchant: "Marriott Hotels", category: "Travel", amountRange: [180, 420], digitalChance: 0.8 },
-          { merchant: "Uber Rides", category: "Travel", amountRange: [8, 45], digitalChance: 0.95 },
-          { merchant: "Shell Gas Station", category: "Gas", amountRange: [30, 75], digitalChance: 0.3 },
-          { merchant: "BP Fuel Stop", category: "Gas", amountRange: [25, 60], digitalChance: 0.25 },
-        ],
-        dining: [
-          { merchant: "Chipotle", category: "Dining", amountRange: [12, 28], digitalChance: 0.7 },
-          { merchant: "Olive Garden", category: "Dining", amountRange: [25, 65], digitalChance: 0.4 },
-          { merchant: "Starbucks", category: "Dining", amountRange: [4, 12], digitalChance: 0.85 },
-          { merchant: "McDonald's", category: "Dining", amountRange: [6, 18], digitalChance: 0.6 },
-          { merchant: "Pizza Hut", category: "Dining", amountRange: [15, 40], digitalChance: 0.5 },
-        ],
-        groceries: [
-          { merchant: "Whole Foods", category: "Groceries", amountRange: [35, 180], digitalChance: 0.6 },
-          { merchant: "Trader Joe's", category: "Groceries", amountRange: [25, 120], digitalChance: 0.4 },
-          { merchant: "Costco", category: "Groceries", amountRange: [80, 300], digitalChance: 0.3 },
-          { merchant: "Walmart Grocery", category: "Groceries", amountRange: [40, 150], digitalChance: 0.5 },
-        ],
-        delivery: [
-          { merchant: "DoorDash", category: "Delivery", amountRange: [15, 55], digitalChance: 0.95 },
-          { merchant: "Uber Eats", category: "Delivery", amountRange: [12, 45], digitalChance: 0.95 },
-          { merchant: "Instacart", category: "Delivery", amountRange: [30, 120], digitalChance: 0.9 },
-          { merchant: "Grubhub", category: "Delivery", amountRange: [14, 40], digitalChance: 0.9 },
-        ],
-        streaming: [
-          { merchant: "Netflix", category: "Streaming", amountRange: [15, 23], digitalChance: 1.0 },
-          { merchant: "Spotify Premium", category: "Streaming", amountRange: [10, 16], digitalChance: 1.0 },
-          { merchant: "YouTube Premium", category: "Streaming", amountRange: [12, 14], digitalChance: 1.0 },
-        ],
-        shopping: [
-          { merchant: "Amazon.com", category: "Shopping", amountRange: [15, 200], digitalChance: 0.95 },
-          { merchant: "Target", category: "Shopping", amountRange: [20, 120], digitalChance: 0.5 },
-          { merchant: "Best Buy", category: "Shopping", amountRange: [30, 500], digitalChance: 0.6 },
-          { merchant: "Nike.com", category: "Shopping", amountRange: [50, 180], digitalChance: 0.9 },
-        ],
-        entertainment: [
-          { merchant: "AMC Theatres", category: "Entertainment", amountRange: [12, 35], digitalChance: 0.7 },
-          { merchant: "Spotify Premium", category: "Entertainment", amountRange: [10, 16], digitalChance: 1.0 },
-          { merchant: "Steam Games", category: "Entertainment", amountRange: [10, 60], digitalChance: 1.0 },
-        ],
-        general: [
-          { merchant: "CVS Pharmacy", category: "General", amountRange: [8, 45], digitalChance: 0.4 },
-          { merchant: "Home Depot", category: "General", amountRange: [20, 200], digitalChance: 0.3 },
-          { merchant: "USPS Shipping", category: "General", amountRange: [5, 25], digitalChance: 0.5 },
-        ],
-      };
-
-      const nameLower = (cardName || "").toLowerCase();
-      const issuerLower = (issuer || "").toLowerCase();
-      const combined = `${nameLower} ${issuerLower}`;
-
-      let selectedPools: string[] = [];
-      if (combined.includes("travel") || combined.includes("airline") || combined.includes("miles")) {
-        selectedPools = ["travel", "dining", "gas", "general"];
-      } else if (combined.includes("dining") || combined.includes("food") || combined.includes("snack") || combined.includes("eat")) {
-        selectedPools = ["dining", "delivery", "groceries", "streaming"];
-      } else if (combined.includes("grocer") || combined.includes("everyday") || combined.includes("daily")) {
-        selectedPools = ["groceries", "dining", "gas", "shopping"];
-      } else if (combined.includes("shopping") || combined.includes("shop") || combined.includes("cash")) {
-        selectedPools = ["shopping", "dining", "streaming", "general"];
-      } else {
-        selectedPools = ["dining", "shopping", "groceries", "entertainment", "general", "delivery"];
-      }
-
-      const pool = selectedPools.flatMap((p) => merchantProfiles[p] || []);
-
-      const txnCount = 8 + Math.floor(Math.random() * 8);
-      const now = new Date();
-      const generated = [];
-
-      for (let i = 0; i < txnCount; i++) {
-        const entry = pool[Math.floor(Math.random() * pool.length)];
-        const amount = Math.round(
-          (entry.amountRange[0] + Math.random() * (entry.amountRange[1] - entry.amountRange[0])) * 100
-        ) / 100;
-        const isDigital = Math.random() < entry.digitalChance;
-        const daysAgo = Math.floor(Math.random() * 30);
-        const date = new Date(now.getTime() - daysAgo * 86400000);
-
-        generated.push({
-          merchant: entry.merchant,
-          category: entry.category,
-          amount,
-          paymentMode: isDigital ? "digital" : "physical",
-          date: date.toISOString().split("T")[0],
+      if (!targetCard) {
+        targetCard = await storage.insertCard({
+          name: card.name.trim(),
+          issuer,
+          lastFour,
+          cardType: "Credit Card",
+          color: "blue",
+          totalRewards: 0,
+          rewardUnit: "cashback",
+          annualFee: 0,
         });
       }
 
-      generated.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-
-      res.json({ transactions: generated });
-    } catch (error) {
-      console.error("Generate transactions error:", error);
-      res.status(500).json({ message: "Failed to generate transactions" });
-    }
-  });
-
-  app.post("/api/onboard", async (req, res) => {
-    try {
-      const { card, transactions: txns } = req.body;
-
-      if (!card || !card.name || !card.lastFour || !card.cardType) {
-        res.status(400).json({ message: "Card name, last 4 digits, and card type are required" });
-        return;
-      }
-      if (!txns || !Array.isArray(txns) || txns.length === 0) {
-        res.status(400).json({ message: "At least one transaction is required" });
-        return;
+      const targetCardId = targetCard.id;
+      const currentCategories = await storage.getCategories();
+      const cardCategories = currentCategories.filter((category) => category.cardId === targetCardId);
+      for (const category of categories) {
+        const configured = cardCategories.find((entry) => entry.category === category);
+        const rewardRate = Number(categoryRates[category]);
+        if (configured) {
+          await storage.updateCategoryRate(configured.id, rewardRate);
+        } else {
+          await storage.insertCategory({
+            cardId: targetCardId,
+            category,
+            rewardRate,
+            maxMonthlySpend: null,
+          });
+        }
       }
 
-      const categoryRates: Record<string, number> = {
-        Travel: 3, Dining: 4, Groceries: 3, Gas: 2, Delivery: 5,
-        Streaming: 3, Shopping: 2, Entertainment: 2, General: 1,
-      };
+      const existingTransactions = await storage.getTransactions();
+      const existingKeys = new Set(
+        existingTransactions
+          .filter((transaction) => transaction.cardId === targetCardId)
+          .map((transaction) => [
+            transaction.date.toISOString().slice(0, 10),
+            transaction.merchant.toLowerCase(),
+            transaction.amount.toFixed(2),
+          ].join("|")),
+      );
+      const insertedTransactions = [];
 
-      const colors = ["blue", "purple", "amber", "emerald", "rose", "slate"];
-      const randomColor = colors[Math.floor(Math.random() * colors.length)];
+      for (const transaction of normalizedRows) {
+        const duplicateKey = [
+          transaction.date.toISOString().slice(0, 10),
+          transaction.merchant.toLowerCase(),
+          transaction.amount.toFixed(2),
+        ].join("|");
+        if (existingKeys.has(duplicateKey)) continue;
+        existingKeys.add(duplicateKey);
 
-      const newCard = await storage.insertCard({
-        name: card.name,
-        issuer: card.issuer || "My Bank",
-        lastFour: card.lastFour,
-        cardType: card.cardType,
-        color: card.color || randomColor,
-        totalRewards: 0,
-        rewardUnit: "cashback",
-        annualFee: card.annualFee || 0,
-      });
+        const rewardRate = Number(categoryRates[transaction.category]);
+        const rewardsEarned = Math.round(transaction.amount * rewardRate) / 100;
 
-      const seenCategories = new Set<string>();
-      let totalRewards = 0;
+        insertedTransactions.push(await storage.insertTransaction({
+          cardId: targetCardId,
+          merchant: transaction.merchant,
+          category: transaction.category,
+          amount: transaction.amount,
+          rewardsEarned,
+          optimalCardId: null,
+          optimalRewards: null,
+          paymentMode: "physical",
+          date: transaction.date,
+        }));
+      }
 
-      const allCards = await storage.getCards();
-      const allCategories = await storage.getCategories();
+      const finalCards = await storage.getCards();
+      const finalCategories = await storage.getCategories();
+      const finalTransactions = await storage.getTransactions();
+      const rewardsByCard: Record<string, number> = {};
 
-      const insertedTxns = [];
-      for (const tx of txns) {
-        if (!tx.merchant || !tx.amount || !tx.category) continue;
+      for (const transaction of finalTransactions) {
+        const ownRate = finalCategories.find(
+          (category) => category.cardId === transaction.cardId && category.category === transaction.category,
+        )?.rewardRate ?? 0;
+        const rewardsEarned = Math.round(transaction.amount * ownRate) / 100;
+        let bestRate = ownRate;
+        let optimalCardId: string | null = null;
+        let optimalRewards: number | null = null;
 
-        const rate = categoryRates[tx.category] || 1;
-        const isDigital = tx.paymentMode === "digital";
-        const effectiveRate = isDigital ? rate + 1 : rate;
-        const earned = tx.amount * (effectiveRate / 100);
-        totalRewards += earned;
-
-        let bestCardId = newCard.id;
-        let bestRewards = earned;
-        for (const otherCard of allCards) {
-          if (otherCard.id === newCard.id) continue;
-          const otherCats = allCategories.filter((c) => c.cardId === otherCard.id);
-          const otherCat = otherCats.find((c) => c.category === tx.category);
-          const otherRate = otherCat ? otherCat.rewardRate : 1;
-          const otherEarned = tx.amount * (otherRate / 100);
-          if (otherEarned > bestRewards) {
-            bestRewards = otherEarned;
-            bestCardId = otherCard.id;
+        for (const otherCard of finalCards) {
+          if (otherCard.id === transaction.cardId) continue;
+          const otherRate = finalCategories.find(
+            (category) => category.cardId === otherCard.id && category.category === transaction.category,
+          )?.rewardRate;
+          if (otherRate !== undefined && otherRate > bestRate) {
+            bestRate = otherRate;
+            optimalCardId = otherCard.id;
+            optimalRewards = Math.round(transaction.amount * otherRate) / 100;
           }
         }
 
-        const inserted = await storage.insertTransaction({
-          cardId: newCard.id,
-          merchant: tx.merchant,
-          category: tx.category,
-          amount: tx.amount,
-          rewardsEarned: earned,
-          optimalCardId: bestCardId !== newCard.id ? bestCardId : null,
-          optimalRewards: bestCardId !== newCard.id ? bestRewards : null,
-          paymentMode: tx.paymentMode || "physical",
-          date: tx.date ? new Date(tx.date) : new Date(),
-        });
-        insertedTxns.push(inserted);
-
-        seenCategories.add(tx.category);
+        rewardsByCard[transaction.cardId] = (rewardsByCard[transaction.cardId] ?? 0) + rewardsEarned;
+        await storage.updateTransactionAnalysis(transaction.id, rewardsEarned, optimalCardId, optimalRewards);
       }
 
-      for (const cat of Array.from(seenCategories)) {
-        const rate = categoryRates[cat] || 1;
-        await storage.insertCategory({
-          cardId: newCard.id,
-          category: cat,
-          rewardRate: rate,
-          maxMonthlySpend: null,
-        });
+      let updatedCard = targetCard;
+      for (const currentCard of finalCards) {
+        const updated = await storage.updateCardRewards(currentCard.id, rewardsByCard[currentCard.id] ?? 0);
+        if (currentCard.id === targetCardId) updatedCard = updated ?? targetCard;
       }
 
-      const updatedCard = await storage.updateCardRewards(newCard.id, totalRewards);
-
-      res.json({
-        card: updatedCard || newCard,
-        transactions: insertedTxns,
-        totalRewards,
-        message: "Card and transactions added successfully!",
+      res.status(201).json({
+        card: updatedCard ?? targetCard,
+        importedCount: insertedTransactions.length,
+        duplicateCount: normalizedRows.length - insertedTransactions.length,
+        transactions: insertedTransactions,
+        isNewCard,
       });
     } catch (error) {
-      console.error("Onboard error:", error);
-      res.status(500).json({ message: "Failed to add card and transactions" });
-    }
-  });
-
-  app.get("/api/redemption-suggestions", async (_req, res) => {
-    try {
-      const summary = await storage.getDashboardSummary();
-      const totalPoints = Math.round(summary.totalRewardsEarned * 100);
-      const pointValue = summary.totalRewardsEarned;
-
-      const suggestions = [
-        {
-          id: "airline-upgrade",
-          icon: "Plane",
-          category: "Travel",
-          title: "Airline seat class upgrade",
-          merchant: "Separated Airlines",
-          pointsCost: 500,
-          dollarValue: 20.00,
-          description: "Upgrade from cramped to slightly-less-cramped seating",
-          tag: "Best Value",
-        },
-        {
-          id: "tax-filing",
-          icon: "Receipt",
-          category: "Finance",
-          title: "Tax filing assistance",
-          merchant: "Ouch That Hurts Tax Co.",
-          pointsCost: 400,
-          dollarValue: 16.00,
-          description: "Let someone else do the math you've been avoiding",
-          tag: "Smart Move",
-        },
-        {
-          id: "dining",
-          icon: "UtensilsCrossed",
-          category: "Dining",
-          title: "Lunch or dinner",
-          merchant: "Pretty Flower Cafe",
-          pointsCost: 300,
-          dollarValue: 12.00,
-          description: "Treat yourself to a meal that's actually free",
-          tag: "Popular",
-        },
-        {
-          id: "movie",
-          icon: "Clapperboard",
-          category: "Entertainment",
-          title: "Movie ticket",
-          merchant: "Cinema Dekho",
-          pointsCost: 250,
-          dollarValue: 10.00,
-          description: "Two hours of not checking your reward balance",
-          tag: "Fun Pick",
-        },
-        {
-          id: "rent-payment",
-          icon: "Home",
-          category: "Housing",
-          title: "50% rent payment",
-          merchant: "Sleep-On-A-Bench Apartments",
-          pointsCost: 1250,
-          dollarValue: 50.00,
-          description: "Half your rent, paid by past-you's smart spending",
-          tag: "Big Saver",
-        },
-      ];
-
-      const affordable = suggestions.filter((s) => s.pointsCost <= totalPoints);
-      const aspirational = suggestions.filter((s) => s.pointsCost > totalPoints);
-
-      res.json({
-        availablePoints: totalPoints,
-        pointValue,
-        suggestions: affordable,
-        aspirational,
-        allSuggestions: suggestions,
-      });
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch redemption suggestions" });
+      const message = error instanceof Error ? error.message : "Statement import failed.";
+      const status = message.includes("invalid") ? 400 : 500;
+      res.status(status).json({ message });
     }
   });
 

@@ -1,29 +1,19 @@
-import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { motion, useReducedMotion } from "framer-motion";
 import { SummaryCards } from "@/components/summary-cards";
 import { CreditCardsSection } from "@/components/credit-cards-section";
 import { TransactionsSection } from "@/components/transactions-section";
-import { InsightsSection } from "@/components/insights-section";
-import { ExpiringRewards } from "@/components/expiring-rewards";
 import { RewardChart } from "@/components/reward-chart";
 import { MissedOpportunities } from "@/components/missed-opportunities";
-import { DigitalVsPhysical } from "@/components/digital-vs-physical";
-import { RewardsLeak } from "@/components/rewards-leak";
-import { RedemptionSuggestions } from "@/components/redemption-suggestions";
 import { HowItWorks } from "@/components/how-it-works";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
 import { Link } from "wouter";
-import { Sparkles, Wallet, FileText, FlaskConical, Plus } from "lucide-react";
-import type { DashboardSummary, CreditCard, RewardCategory, Transaction, Reward, Insight } from "@shared/schema";
+import { ArrowRight, FileText, Wallet } from "lucide-react";
+import type { DashboardSummary, CreditCard, RewardCategory, Transaction } from "@shared/schema";
 
 export default function Dashboard() {
-  const [demoMode, setDemoMode] = useState(true);
-  const [filterSaveProMax, setFilterSaveProMax] = useState(false);
-  const [filterMidnightSnacks, setFilterMidnightSnacks] = useState(false);
-
+  const reduceMotion = useReducedMotion();
   const { data: summary, isLoading: summaryLoading } = useQuery<DashboardSummary>({
     queryKey: ["/api/dashboard/summary"],
   });
@@ -40,14 +30,6 @@ export default function Dashboard() {
     queryKey: ["/api/transactions"],
   });
 
-  const { data: rewards, isLoading: rewardsLoading } = useQuery<Reward[]>({
-    queryKey: ["/api/rewards"],
-  });
-
-  const { data: insights, isLoading: insightsLoading } = useQuery<Insight[]>({
-    queryKey: ["/api/insights"],
-  });
-
   return (
     <div className="min-h-screen bg-background">
       <header className="sticky top-0 z-50 border-b bg-background/80 backdrop-blur-md">
@@ -60,32 +42,12 @@ export default function Dashboard() {
               <span className="text-lg font-bold tracking-tight" data-testid="text-app-name">
                 WalletWins
               </span>
-              <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-blue-500/10">
-                <Sparkles className="w-3 h-3 text-blue-500" />
-                <span className="text-[10px] font-semibold text-blue-600 dark:text-blue-400 uppercase tracking-wider">
-                  AI
-                </span>
-              </div>
             </div>
             <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1.5 mr-1">
-                <Switch
-                  checked={demoMode}
-                  onCheckedChange={setDemoMode}
-                  data-testid="switch-demo-mode"
-                />
-                <span className="text-xs text-muted-foreground hidden sm:inline">Demo</span>
-              </div>
-              {demoMode && (
-                <Badge variant="outline" className="bg-amber-500/15 text-amber-700 dark:text-amber-400 border-amber-500/30 text-[10px] no-default-hover-elevate no-default-active-elevate" data-testid="badge-demo-mode">
-                  <FlaskConical className="w-3 h-3 mr-1" />
-                  Demo Mode Active
-                </Badge>
-              )}
               <Link href="/onboard">
-                <Button variant="ghost" size="sm" data-testid="button-add-card">
-                  <Plus className="w-4 h-4" />
-                  <span className="hidden sm:inline">Add Card</span>
+                <Button variant="ghost" size="sm" data-testid="button-upload-statement">
+                  <FileText className="w-4 h-4" />
+                  <span className="hidden sm:inline">Upload statement</span>
                 </Button>
               </Link>
               <Link href="/statements">
@@ -100,7 +62,12 @@ export default function Dashboard() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+      <motion.main
+        initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.4, ease: "easeOut" }}
+        className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6"
+      >
         <div>
           <h1 className="text-2xl font-bold tracking-tight" data-testid="text-heading">
             Reward Dashboard
@@ -110,60 +77,30 @@ export default function Dashboard() {
           </p>
         </div>
 
-        <SummaryCards summary={summary} isLoading={summaryLoading} />
-
-        <MissedOpportunities
-          transactions={transactions}
-          cards={cards}
-          isLoading={transactionsLoading || cardsLoading}
-        />
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <RewardsLeak />
-          <div className="space-y-6">
-            <ExpiringRewards
-              rewards={rewards}
-              cards={cards}
-              isLoading={rewardsLoading || cardsLoading}
-            />
-            <RewardChart cards={cards} isLoading={cardsLoading} />
+        {!cardsLoading && cards?.length === 0 ? (
+          <div className="rounded-2xl border bg-card px-6 py-14 text-center sm:px-12">
+            <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-500/10 text-blue-600 dark:text-blue-400">
+              <FileText className="h-7 w-7" />
+            </div>
+            <h2 className="text-xl font-semibold">Start with a real statement</h2>
+            <p className="mx-auto mt-2 max-w-lg text-sm leading-relaxed text-muted-foreground">
+              Import a CSV or OFX export from your card issuer. WalletWins will organize purchases and estimate rewards from the rates you provide.
+            </p>
+            <Link href="/onboard">
+              <Button className="mt-6" data-testid="button-empty-upload">Upload a statement <ArrowRight className="h-4 w-4" /></Button>
+            </Link>
           </div>
-        </div>
-
-        <RedemptionSuggestions />
-
-        <CreditCardsSection
-          cards={cards}
-          categories={categories}
-          isLoading={cardsLoading || categoriesLoading}
-        />
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <TransactionsSection
-            transactions={transactions}
-            cards={cards}
-            isLoading={transactionsLoading || cardsLoading}
-            filterCardName={filterSaveProMax ? "Card-SaveProMax" : filterMidnightSnacks ? "Card-MidnightSnacks" : null}
-          />
-          <InsightsSection insights={insights} isLoading={insightsLoading} />
-        </div>
-
-        <DigitalVsPhysical
-          cardName="Card-SaveProMax"
-          accentColor="blue"
-          filterActive={filterSaveProMax}
-          onFilterToggle={setFilterSaveProMax}
-        />
-
-        <DigitalVsPhysical
-          cardName="Card-MidnightSnacks"
-          accentColor="amber"
-          filterActive={filterMidnightSnacks}
-          onFilterToggle={setFilterMidnightSnacks}
-        />
-
-        <HowItWorks />
-      </main>
+        ) : (
+          <>
+            <SummaryCards summary={summary} isLoading={summaryLoading} />
+            <MissedOpportunities transactions={transactions} cards={cards} isLoading={transactionsLoading || cardsLoading} />
+            <RewardChart cards={cards} isLoading={cardsLoading} />
+            <CreditCardsSection cards={cards} categories={categories} isLoading={cardsLoading || categoriesLoading} />
+            <TransactionsSection transactions={transactions} cards={cards} isLoading={transactionsLoading || cardsLoading} />
+            <HowItWorks />
+          </>
+        )}
+      </motion.main>
 
       <footer className="border-t mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
@@ -173,12 +110,10 @@ export default function Dashboard() {
                 <Wallet className="w-3 h-3 text-white" />
               </div>
               <span className="text-xs text-muted-foreground">
-                WalletWins AI
+                WalletWins
               </span>
             </div>
-            <p className="text-xs text-muted-foreground">
-              Sample data for demo purposes
-            </p>
+            <Link href="/onboard" className="text-xs text-muted-foreground hover:text-foreground">Import another statement</Link>
           </div>
         </div>
       </footer>
