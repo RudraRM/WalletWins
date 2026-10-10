@@ -248,6 +248,12 @@ export async function registerRoutes(
       const rawMessage = typeof databaseError.message === "string" ? databaseError.message.trim() : "";
       const detail = typeof databaseError.detail === "string" ? databaseError.detail.trim() : "";
       const code = typeof databaseError.code === "string" ? databaseError.code : "";
+      if (code === "ECONNREFUSED" || rawMessage.includes("ECONNREFUSED")) {
+        res.status(503).json({
+          message: "Database unavailable. Provision PostgreSQL and set DATABASE_URL before importing statements.",
+        });
+        return;
+      }
       const message = rawMessage || detail || (code ? `Database request failed (${code}).` : "Statement import failed before the records could be saved.");
       const status = /invalid|required|couldn't find|no purchases/i.test(message) ? 400 : 500;
       res.status(status).json({ message });
